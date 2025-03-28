@@ -1,21 +1,13 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Only include absolutely necessary configuration
   reactStrictMode: true,
-  // Disable static exports and use server-side rendering
   experimental: {
-    serverComponentsExternalPackages: ['pdf-parse'],
-    // Disable features that might cause pattern matching issues
-    optimizeCss: false,
-    optimizePackageImports: false,
-    serverActions: false
+    // This is required for pdf-parse
+    serverComponentsExternalPackages: ['pdf-parse']
   },
-  // Disable webpack optimizations that might trigger pattern matching
-  webpack: (config) => {
-    config.watchOptions = {
-      ignored: ['node_modules/**']
-    }
-    return config
-  }
+  // Disable all pattern matching and file watching
+  pageExtensions: ['js', 'jsx', 'ts', 'tsx']
 }
 
 module.exports = nextConfig 
