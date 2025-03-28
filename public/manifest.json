@@ -1,25 +1,15 @@
 {
   "name": "Document QA Chatbot",
   "short_name": "Doc QA",
-  "description": "An easy to use chatbot that can answer questions about documents with proper citation and reasoning.",
+  "description": "A sophisticated chatbot that can answer questions about documents with proper citation and reasoning.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#000000",
+  "background_color": "#ffffff",
   "theme_color": "#000000",
   "icons": [
     {
       "src": "/favicon.ico",
-      "sizes": "16x16",
-      "type": "image/x-icon"
-    },
-    {
-      "src": "/favicon.ico",
-      "sizes": "32x32",
-      "type": "image/x-icon"
-    },
-    {
-      "src": "/favicon.ico",
-      "sizes": "64x64",
+      "sizes": "any",
       "type": "image/x-icon"
     }
   ]

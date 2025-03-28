@@ -15,6 +15,7 @@
     "@langchain/core": "^0.3.43",
     "@types/pdf-parse": "^1.1.4",
     "clsx": "^2.1.1",
+    "critters": "^0.0.23",
     "faiss-node": "^0.5.1",
     "framer-motion": "^12.6.2",
     "langchain": "^0.3.19",

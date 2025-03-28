@@ -6,10 +6,15 @@ const nextConfig = {
   experimental: {
     serverComponentsExternalPackages: ['pdf-parse']
   },
-  // Add webpack configuration to handle potential circular dependencies
-  webpack: (config, { isServer }) => {
-    // Add any custom webpack config here if needed
-    return config
+  // Optimize static asset handling
+  images: {
+    unoptimized: true,
+  },
+  // Optimize static generation
+  staticPageGenerationTimeout: 120,
+  experimental: {
+    optimizeCss: true,
+    serverComponentsExternalPackages: ['pdf-parse']
   }
 }
 

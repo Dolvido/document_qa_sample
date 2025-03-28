@@ -10,13 +10,7 @@ export const viewport: Viewport = {
 
 export const metadata: Metadata = {
   title: "Document QA Chatbot",
-  description: "A sophisticated chatbot that can answer questions about documents with proper citation and reasoning.",
-  icons: {
-    icon: [
-      { url: '/icon.svg?v=1', type: 'image/svg+xml' },
-      { url: '/favicon.ico?v=1', type: 'image/x-icon' }
-    ],
-  }
+  description: "A sophisticated chatbot that can answer questions about documents with proper citation and reasoning."
 };
 
 export default function RootLayout({
