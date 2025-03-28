@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 11, 17, 33;
+    --foreground: 255, 255, 255;
+  }
+
+  body {
+    @apply min-h-screen text-slate-100;
+    background-color: rgb(var(--background));
+    background-image: radial-gradient(
+      circle at center,
+      rgba(99, 102, 241, 0.15) 0%,
+      rgba(var(--background), 1) 70%
+    );
+  }
+}
+
+@layer components {
+  .glass-card {
+    @apply relative overflow-hidden rounded-xl border border-slate-700/50;
+    background: rgba(30, 41, 59, 0.4);
+    backdrop-filter: blur(8px);
+  }
+
+  .tech-tag {
+    @apply inline-flex items-center px-3 py-1 text-sm text-slate-300 bg-slate-800/50 rounded-full border border-slate-700/50;
+  }
+
+  .chat-container {
+    @apply glass-card p-4 overflow-y-auto;
+    height: calc(100vh - 32rem);
+    min-height: 400px;
+  }
+
+  .message-input {
+    @apply glass-card mt-4 p-4 flex items-center gap-4;
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
