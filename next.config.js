@@ -1,23 +1,20 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  swcMinify: true,
-  // Change output mode to export for static site generation
-  output: 'export',
-  // Disable image optimization since we're using export
-  images: {
-    unoptimized: true,
-  },
-  // Specify external packages that should be bundled
+  // Disable static exports and use server-side rendering
   experimental: {
-    serverComponentsExternalPackages: ['pdf-parse']
+    serverComponentsExternalPackages: ['pdf-parse'],
+    // Disable features that might cause pattern matching issues
+    optimizeCss: false,
+    optimizePackageImports: false,
+    serverActions: false
   },
-  // Disable unnecessary features for static export
-  typescript: {
-    ignoreBuildErrors: true
-  },
-  eslint: {
-    ignoreDuringBuilds: true
+  // Disable webpack optimizations that might trigger pattern matching
+  webpack: (config) => {
+    config.watchOptions = {
+      ignored: ['node_modules/**']
+    }
+    return config
   }
 }
 
