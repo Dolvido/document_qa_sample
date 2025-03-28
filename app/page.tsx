@@ -90,11 +90,11 @@ export default function Home() {
     <main className="min-h-screen">
       <nav className="border-b border-slate-700/50 backdrop-blur-sm fixed top-0 w-full z-50">
         <div className="container mx-auto px-4 h-16 flex items-center justify-between">
-          <a href="/" className="text-xl font-semibold text-white">Portfolio</a>
+          <a href="https://lukepayne.web.app/" className="text-xl font-semibold text-white">Portfolio</a>
           <div className="flex items-center gap-8">
-            <a href="/projects" className="text-slate-300 hover:text-white transition-colors">Projects</a>
-            <a href="/about" className="text-slate-300 hover:text-white transition-colors">About</a>
-            <a href="/contact" className="text-slate-300 hover:text-white transition-colors">Contact</a>
+            <a href="https://lukepayne.web.app/projects" className="text-slate-300 hover:text-white transition-colors">Projects</a>
+            <a href="https://lukepayne.web.app/about" className="text-slate-300 hover:text-white transition-colors">About</a>
+            <a href="https://lukepayne.web.app/contact" className="text-slate-300 hover:text-white transition-colors">Contact</a>
           </div>
         </div>
       </nav>
