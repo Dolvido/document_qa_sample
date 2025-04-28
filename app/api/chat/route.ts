@@ -2,7 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { Document } from "@langchain/core/documents";
 import { HuggingFaceInference } from "@langchain/community/llms/hf";
 import { HuggingFaceInferenceEmbeddings } from "@langchain/community/embeddings/hf";
-import type { PDFData } from 'pdf-parse';
+// Removed direct import of pdf-parse types
+// import type { PDFData } from 'pdf-parse';
+
+// Custom interface to replace PDFData
+interface SimplePDFData {
+  text: string;
+  numpages?: number;
+}
 
 // Safer check for API key
 const HUGGINGFACEHUB_API_KEY = process.env.HUGGINGFACEHUB_API_KEY;
@@ -177,47 +184,29 @@ export async function POST(req: NextRequest) {
           
           if (file.name.toLowerCase().endsWith('.pdf')) {
             try {
-              // Import pdf-parse dynamically and handle the module default export
-              const pdfParseModule = await import('pdf-parse');
-              const pdfParse = pdfParseModule.default || pdfParseModule;
+              // For Edge runtime, we'll use a simpler approach for PDF extraction
+              // Note: This is a temporary solution for Edge runtime
+              // In production, consider using a PDF extraction API service instead of pdf-parse
               
-              // Convert ArrayBuffer to Buffer for pdf-parse
-              const pdfBuffer = Buffer.from(arrayBuffer);
+              // Try direct text extraction first
+              text = await new Blob([arrayBuffer]).text();
               
-              // Parse PDF with error handling and timeout
-              const pdfData = await Promise.race([
-                new Promise<PDFData>((resolve, reject) => {
-                  pdfParse(pdfBuffer)
-                    .then(resolve)
-                    .catch((err) => {
-                      console.error('PDF parsing error details:', err);
-                      reject(err);
-                    });
-                }),
-                new Promise<never>((_, reject) => 
-                  setTimeout(() => reject(new Error('PDF parsing timed out')), 20000)
-                )
-              ]);
-              
-              text = pdfData.text;
-              console.log('Successfully parsed PDF, extracted text length:', text.length);
-            } catch (error) {
-              console.error('Error parsing PDF:', error);
-              // Try to still provide a response - fallback to simple extraction
-              try {
-                text = await new Blob([arrayBuffer]).text();
-                if (!text.trim()) {
-                  return NextResponse.json(
-                    { text: "I encountered difficulties reading the PDF file. It might be scanned, protected, or corrupted. Please try another file or format." },
-                    { status: 200 }
-                  );
-                }
-              } catch (e) {
+              // If we didn't get much text, inform the user about the limitations
+              if (!text.trim() || text.length < 100) {
+                console.warn('Direct text extraction from PDF yielded little content');
                 return NextResponse.json(
-                  { text: "I couldn't process the PDF file. It might be scanned, protected, or corrupted. Please try another file or format." },
+                  { text: "The Edge runtime has limited PDF processing capabilities. For better results, please convert your PDF to a text file, or use a plain text document." },
                   { status: 200 }
                 );
               }
+              
+              console.log('Successfully extracted text from PDF using direct method, length:', text.length);
+            } catch (error) {
+              console.error('Error extracting text from PDF:', error);
+              return NextResponse.json(
+                { text: "I couldn't process the PDF file in the Edge runtime. Please try uploading a text document instead, or use the non-Edge version of this application." },
+                { status: 200 }
+              );
             }
           } else {
             // For non-PDF files, use direct text extraction

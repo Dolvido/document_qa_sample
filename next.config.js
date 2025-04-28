@@ -8,13 +8,18 @@ const nextConfig = {
   },
   // Enable source maps in production for better error reporting
   productionBrowserSourceMaps: true,
-  // Increase timeout for API routes
-  api: {
-    responseLimit: '16mb',
-    bodyParser: {
-      sizeLimit: '16mb',
+  
+  // Configure API route settings properly
+  serverRuntimeConfig: {
+    // API settings will only apply to server-side
+    api: {
+      responseLimit: '16mb',
+      bodyParser: {
+        sizeLimit: '16mb',
+      },
     },
   },
+  
   // Set strict build configuration but allow build to continue
   typescript: {
     // Log errors during build but don't fail
@@ -31,6 +36,15 @@ const nextConfig = {
       ...config.experiments,
       topLevelAwait: true,
     };
+    
+    // Add polyfills for Node.js modules used by pdf-parse
+    config.resolve.fallback = {
+      ...config.resolve.fallback,
+      fs: false,
+      http: false,
+      https: false,
+    };
+    
     return config;
   },
 }
