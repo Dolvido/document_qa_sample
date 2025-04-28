@@ -5,13 +5,20 @@ import ChatMessage from './ChatMessage';
 import LoadingSpinner from './LoadingSpinner';
 import { Message } from '../types/chat';
 import { AnimatePresence } from 'framer-motion';
+import FilePreview from '../../components/FilePreview';
+import { extractTextFromPdf } from '../../lib/pdfUtils';
+import CheckPdfWorker from '../../components/CheckPdfWorker';
 
-// Safe storage helper functions
+// Safe storage helper functions with improved error handling
 const safeLocalStorage = {
   getItem: (key: string): string | null => {
     if (typeof window === 'undefined') return null;
     
     try {
+      // First check if localStorage is actually available
+      if (window.localStorage === undefined) return null;
+      
+      // Attempt to read directly without testing first (reduces operations)
       return window.localStorage.getItem(key);
     } catch (e) {
       console.warn('Local storage access denied:', e);
@@ -22,6 +29,10 @@ const safeLocalStorage = {
     if (typeof window === 'undefined') return false;
     
     try {
+      // First check if localStorage is actually available
+      if (window.localStorage === undefined) return false;
+      
+      // Attempt to write directly
       window.localStorage.setItem(key, value);
       return true;
     } catch (e) {
@@ -33,16 +44,52 @@ const safeLocalStorage = {
     if (typeof window === 'undefined') return false;
     
     try {
-      // Test if storage is available
-      const testKey = '__storage_test__';
-      window.localStorage.setItem(testKey, 'test');
-      window.localStorage.removeItem(testKey);
-      return true;
+      // Use a simpler test that doesn't try to write
+      return !!window.localStorage;
     } catch (e) {
       return false;
     }
   }
 };
+
+// Add this function to process files client-side
+async function processFilesClientSide(files: File[]): Promise<{name: string, type: string, data: string, size: number, text?: string}[]> {
+  return Promise.all(
+    files.map(async (file) => {
+      // First create the basic file data
+      const fileData = await new Promise<{name: string, type: string, data: string, size: number}>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          resolve({
+            name: file.name,
+            type: file.type,
+            data: reader.result as string,
+            size: file.size
+          });
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      
+      // For PDFs, extract text client-side
+      if (file.type === 'application/pdf') {
+        try {
+          console.log(`Processing PDF client-side: ${file.name}`);
+          const result = await extractTextFromPdf(file);
+          return {
+            ...fileData,
+            text: result.text // Add extracted text
+          };
+        } catch (error) {
+          console.error('Error processing PDF client-side:', error);
+          return fileData; // Fall back to just the file data
+        }
+      }
+      
+      return fileData;
+    })
+  );
+}
 
 export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -52,6 +99,7 @@ export default function ChatInterface() {
   const [storageAvailable, setStorageAvailable] = useState<boolean>(true);
   const inputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const [processingStage, setProcessingStage] = useState<string>('');
 
   // Check if storage is available
   useEffect(() => {
@@ -69,21 +117,30 @@ export default function ChatInterface() {
 
   // Load saved messages and files from storage on component mount
   useEffect(() => {
-    if (!storageAvailable) return;
+    if (!storageAvailable) {
+      console.log('Browser storage is not available - skipping state restoration');
+      return;
+    }
     
+    // Wrap in a try/catch to be extra safe
     try {
       // Try to load saved messages
       const savedMessages = safeLocalStorage.getItem('chat_messages');
       if (savedMessages) {
-        setMessages(JSON.parse(savedMessages));
+        try {
+          const parsedMessages = JSON.parse(savedMessages);
+          if (Array.isArray(parsedMessages)) {
+            setMessages(parsedMessages);
+          }
+        } catch (parseError) {
+          console.warn('Failed to parse saved messages:', parseError);
+          // Clear potentially corrupted state
+          safeLocalStorage.setItem('chat_messages', '');
+        }
       }
-      
-      // Note: We can't save actual File objects to localStorage
-      // So we're just restoring messages here
     } catch (e) {
       console.warn('Failed to load saved chat state:', e);
-      // Clear potentially corrupted state
-      safeLocalStorage.setItem('chat_messages', '');
+      // Don't try to clear anything, just fail silently
     }
   }, [storageAvailable]);
 
@@ -91,11 +148,17 @@ export default function ChatInterface() {
   useEffect(() => {
     if (!storageAvailable || messages.length === 0) return;
     
-    try {
-      safeLocalStorage.setItem('chat_messages', JSON.stringify(messages));
-    } catch (e) {
-      console.warn('Failed to save chat state:', e);
-    }
+    // Use a debounced save to avoid excessive writes
+    const timeoutId = setTimeout(() => {
+      try {
+        safeLocalStorage.setItem('chat_messages', JSON.stringify(messages));
+      } catch (e) {
+        console.warn('Failed to save chat state:', e);
+        // Just log and continue, don't try to fix
+      }
+    }, 500); // 500ms debounce
+    
+    return () => clearTimeout(timeoutId);
   }, [messages, storageAvailable]);
 
   // Clear saved data when clearing chat
@@ -111,7 +174,12 @@ export default function ChatInterface() {
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const fileList = event.target.files;
     if (fileList) {
-      setFiles(Array.from(fileList));
+      console.log('Files selected:', fileList.length);
+      
+      const filesArray = Array.from(fileList);
+      console.log('File details:', filesArray.map(f => `${f.name} (${f.size} bytes)`));
+      
+      setFiles(filesArray);
       setError(null);
       if (messages.length === 0) {
         setMessages([{
@@ -140,84 +208,92 @@ export default function ChatInterface() {
     if (!inputRef.current?.value.trim() || !files.length) return;
 
     const question = inputRef.current.value;
+    console.log('Submitting question:', question);
+    console.log('With files:', files.map(f => f.name));
+    
+    // Add user message to chat
     setMessages(prev => [...prev, { text: question, isAi: false }]);
     inputRef.current.value = '';
     setIsProcessing(true);
     setError(null);
-
+    
+    // Show processing stages
+    setProcessingStage('Processing documents...');
+    
     try {
-      const formData = new FormData();
-      formData.append('question', question);
-      files.forEach(file => formData.append('files', file));
-
+      // Process files client-side when possible
+      const processedFiles = await processFilesClientSide(files);
+      console.log(`Processed ${processedFiles.length} files client-side`);
+      
       // Set timeout for fetch to handle possible timeouts
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 45000); // 45-second timeout
-      
+      const timeoutId = setTimeout(() => controller.abort(), 120000); // 120-second timeout
+
+      // Update processing stage
+      setProcessingStage('Generating answer...');
+
+      // Add some random delay to prevent Next.js edge functions timing out
+      // This helps when multiple requests are being processed
+      await new Promise(resolve => setTimeout(resolve, Math.random() * 1000));
+
       try {
+        console.log('Sending request to chat API');
         const response = await fetch('/api/chat', {
           method: 'POST',
-          body: formData,
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            messages: [{ content: question, role: 'user' }],
+            files: processedFiles
+          }),
           signal: controller.signal
         });
-  
-        clearTimeout(timeoutId);
 
-        const data = await response.json();
+        clearTimeout(timeoutId);
         
         if (!response.ok) {
-          if (data.error) {
-            setError(data.error);
-            setMessages(prev => [...prev, {
-              text: data.error || "I'm sorry, but I encountered an error. Please try again later.",
-              isAi: true
-            }]);
-          } else {
-            throw new Error('An unexpected error occurred');
-          }
-        } else if (data.error) {
-          // Handle case where we get a 200 response but with an error message
-          setError(data.error);
-          setMessages(prev => [...prev, {
-            text: data.error,
-            isAi: true
-          }]);
-        } else if (data.text) {
-          // Normal success case
+          const errorText = await response.text();
+          throw new Error(`Server error: ${response.status} - ${errorText}`);
+        }
+        
+        const data = await response.json();
+        
+        // Add response to messages
+        if (data.text) {
           setMessages(prev => [...prev, {
             text: data.text,
             isAi: true,
-            citations: data.citations
+            citations: data.citations || []
           }]);
+        } else if (data.error) {
+          throw new Error(data.error);
         } else {
-          throw new Error('Received empty response');
+          throw new Error('Invalid response from server');
         }
-      } catch (fetchError: any) {
-        // Type assertion for fetchError
-        if (fetchError && fetchError.name === 'AbortError') {
-          // Request was aborted due to timeout
-          setError('Request timed out');
-          setMessages(prev => [...prev, {
-            text: "The server took too long to respond. PDF processing can be resource-intensive. Please try with a smaller file or a different format.",
-            isAi: true
-          }]);
-        } else {
-          throw fetchError;
-        }
+      } catch (error: any) {
+        console.error('Error calling chat API:', error);
+        setError(error.message || 'Failed to generate a response. Please try again.');
+        setMessages(prev => [...prev, {
+          text: 'Sorry, I encountered an error while processing your question. Please try again.',
+          isAi: true
+        }]);
       }
-    } catch (error) {
-      console.error('Error:', error);
-      const errorMessage = error instanceof Error 
-        ? error.message 
-        : "I'm sorry, but I encountered an error while processing your question. Please try again.";
-      
-      setError(errorMessage);
+    } catch (error: any) {
+      console.error('Error processing files:', error);
+      setError(error.message || 'Failed to process files. Please try again with different files.');
       setMessages(prev => [...prev, {
-        text: "I'm sorry, but I encountered an error while processing your question. This might be due to server issues or network problems. Please try again later.",
+        text: 'Sorry, I encountered an error while processing your documents. Please try again with different files.',
         isAi: true
       }]);
     } finally {
       setIsProcessing(false);
+      setProcessingStage('');
+      
+      // Scroll to bottom
+      setTimeout(() => {
+        chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 100);
     }
   };
 
@@ -240,6 +316,11 @@ export default function ChatInterface() {
         onDrop={handleDrop}
         onDragOver={(e) => e.preventDefault()}
       >
+        {/* PDF Worker status check */}
+        <div className="mb-4">
+          <CheckPdfWorker />
+        </div>
+        
         <div className="text-center">
           <label htmlFor="file-upload" className="inline-block">
             <span className="bg-primary hover:bg-primary/80 text-white font-medium px-6 py-3 rounded-xl transition-colors cursor-pointer">
@@ -265,13 +346,25 @@ export default function ChatInterface() {
         )}
         
         {files.length > 0 && (
-          <div className="mt-4 space-y-2">
+          <div className="mt-4 space-y-4">
+            <h3 className="text-sm font-medium text-slate-300">Uploaded Files</h3>
             {files.map((file, index) => (
-              <div key={index} className="flex items-center gap-2 text-slate-400 bg-slate-800/30 rounded-lg p-2">
-                <span>{file.name}</span>
-                <span className={`text-sm ${file.size > 10 * 1024 * 1024 ? 'text-red-400' : 'text-slate-500'}`}>
-                  ({Math.round(file.size / 1024)}KB)
-                </span>
+              <div key={index} className="border border-slate-700/50 rounded-lg overflow-hidden">
+                <div className="flex items-center justify-between bg-slate-800/30 p-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-slate-300">{file.name}</span>
+                    <span className={`text-xs ${file.size > 10 * 1024 * 1024 ? 'text-red-400' : 'text-slate-500'}`}>
+                      ({Math.round(file.size / 1024)}KB)
+                    </span>
+                  </div>
+                  <button 
+                    onClick={() => setFiles(files.filter((_, i) => i !== index))}
+                    className="text-slate-400 hover:text-red-400"
+                  >
+                    Remove
+                  </button>
+                </div>
+                <FilePreview file={file} />
               </div>
             ))}
           </div>
@@ -333,7 +426,9 @@ export default function ChatInterface() {
           className="bg-primary hover:bg-primary/80 text-white px-6 py-2.5 rounded-xl transition-colors disabled:opacity-50 disabled:hover:bg-primary font-medium"
           disabled={isProcessing || files.length === 0 || !!error}
         >
-          {isProcessing ? 'Processing...' : 'Send'}
+          {isProcessing 
+            ? processingStage || 'Processing...' 
+            : 'Send'}
         </button>
       </form>
     </>

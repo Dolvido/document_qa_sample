@@ -2,22 +2,23 @@
 const nextConfig = {
   // Only include absolutely necessary configuration
   reactStrictMode: true,
+  
+  // Configure memory limit for serverless functions
   experimental: {
-    // This is required for pdf-parse
-    serverComponentsExternalPackages: ['pdf-parse', 'pdfjs-dist']
+    serverComponentsExternalPackages: ['pdfjs-dist']
   },
+  
   // Enable source maps in production for better error reporting
   productionBrowserSourceMaps: true,
   
   // Configure API route settings properly
   serverRuntimeConfig: {
-    // API settings will only apply to server-side
     api: {
       responseLimit: '16mb',
       bodyParser: {
         sizeLimit: '16mb',
       },
-    },
+    }
   },
   
   // Set strict build configuration but allow build to continue
@@ -29,25 +30,27 @@ const nextConfig = {
     // Log errors during build but don't fail
     ignoreDuringBuilds: true,
   },
-  // Configure webpack to handle large files properly
+  
+  // Configure webpack for proper PDF handling
   webpack: (config) => {
-    // Adjust default behavior for handling buffer in serverless environment
+    // Adjust default behavior for handling buffer
     config.experiments = {
       ...config.experiments,
       topLevelAwait: true,
     };
     
-    // Add polyfills for Node.js modules used by pdf-parse
+    // Define fallbacks for Node.js modules
     config.resolve.fallback = {
       ...config.resolve.fallback,
       fs: false,
-      http: false,
-      https: false,
       path: false,
-      zlib: false,
-      stream: false,
-      util: false,
-      crypto: false
+      canvas: false
+    };
+    
+    // Add resolve alias for canvas to use our mock implementation
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      canvas: require.resolve('./app/api/pdf/canvas-mock.js')
     };
     
     return config;

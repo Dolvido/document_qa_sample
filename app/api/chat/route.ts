@@ -1,355 +1,322 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Document } from "@langchain/core/documents";
-import { HuggingFaceInference } from "@langchain/community/llms/hf";
-import { HuggingFaceInferenceEmbeddings } from "@langchain/community/embeddings/hf";
-// Removed direct import of pdf-parse types
-// import type { PDFData } from 'pdf-parse';
+import { extractBasicPdfText } from '../pdf/extract';
 
-// Custom interface to replace PDFData
-interface SimplePDFData {
-  text: string;
-  numpages?: number;
+// Configure route options
+export const runtime = 'nodejs';
+export const maxDuration = 60;
+
+// Define file type for uploads
+interface FileData {
+  name: string;
+  type: string;
+  data: string; // Base64 data
+  size?: number;
+  text?: string; // Optional pre-extracted text from client-side processing
 }
 
-// Safer check for API key
-const HUGGINGFACEHUB_API_KEY = process.env.HUGGINGFACEHUB_API_KEY;
-if (!HUGGINGFACEHUB_API_KEY) {
-  console.error('Missing HuggingFace API Key - this will cause failures in production');
-  // We don't throw here to allow the app to still initialize
-}
-
-const TEMPLATE = `You are a helpful assistant analyzing document content. Use the following pieces of context to answer the question at the end.
-If you don't know the answer, just say that you don't know, don't try to make up an answer.
-Keep your answer concise and focused on the question.
-
-Context: {context}
-
-Question: {question}
-
-Answer:`;
-
-// Initialize models with safer error handling
-let embeddingModel: HuggingFaceInferenceEmbeddings | null = null;
-let llm: HuggingFaceInference | null = null;
-
-try {
-  if (HUGGINGFACEHUB_API_KEY) {
-    embeddingModel = new HuggingFaceInferenceEmbeddings({
-      apiKey: HUGGINGFACEHUB_API_KEY,
-      model: "sentence-transformers/all-MiniLM-L6-v2"
-    });
-
-    // Create LLM with custom fetch options to improve timeout handling
-    llm = new HuggingFaceInference({
-      apiKey: HUGGINGFACEHUB_API_KEY,
-      model: "mistralai/Mistral-7B-Instruct-v0.1",
-      temperature: 0.5
-    });
-  }
-} catch (error) {
-  console.error('Error initializing HuggingFace models:', error);
+// Define message type
+interface Message {
+  role: string;
+  content: string;
 }
 
 // Clean and normalize text
 function cleanText(text: string): string {
   return text
-    .replace(/[\uFFFD\uFFFE\uFFFF]/g, '') // Remove replacement characters
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '') // Remove control characters
-    .replace(/[^\x20-\x7E\n\t]/g, ' ') // Replace non-ASCII chars with space
-    .replace(/\s+/g, ' ') // Normalize whitespace
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
-// Simple text splitter function
-function splitTextIntoChunks(text: string, chunkSize: number, overlap: number): string[] {
-  // Clean the text first
-  const cleanedText = cleanText(text);
+// Find the best sentence containing a keyword
+function findBestSentence(text: string, keyword: string): string | null {
+  if (!text.toLowerCase().includes(keyword.toLowerCase())) return null;
   
-  // Split on natural boundaries first
-  const sections = cleanedText.split(/\n{2,}/);
-  const chunks: string[] = [];
+  // Split text into sentences
+  const sentences = text.split(/(?<=[.!?])\s+/);
   
-  for (const section of sections) {
-    if (section.length <= chunkSize) {
-      if (section.trim()) {
-        chunks.push(section.trim());
-      }
-      continue;
+  // Score each sentence by relevance to keyword
+  const scoredSentences = sentences.map(sentence => {
+    const lowerSentence = sentence.toLowerCase();
+    const keywordIndex = lowerSentence.indexOf(keyword.toLowerCase());
+    
+    if (keywordIndex === -1) return { sentence, score: 0 };
+    
+    // Higher score for shorter sentences that contain the keyword
+    const score = (1 / sentence.length) * 1000 + 10;
+    return { sentence, score };
+  });
+  
+  // Sort by score and get the best sentence
+  scoredSentences.sort((a, b) => b.score - a.score);
+  
+  return scoredSentences[0].score > 0 ? scoredSentences[0].sentence : null;
+}
+
+// Process user query and generate a response
+async function processQuery(query: string, documents: Document[]): Promise<{ text: string, citations: any[] }> {
+  try {
+    console.log(`Processing query: ${query}`);
+    
+    // Implement enhanced keyword-based search
+    const keywords = query.toLowerCase()
+      .replace(/[^\w\s]/g, '')
+      .split(/\s+/)
+      .filter(word => word.length > 2)
+      // Remove common stop words
+      .filter(word => !['the', 'and', 'that', 'for', 'this', 'are', 'with'].includes(word));
+    
+    if (keywords.length === 0) {
+      // If no meaningful keywords were found, use the whole query
+      keywords.push(...query.toLowerCase().split(/\s+/).filter(w => w.length > 2));
     }
     
-    let index = 0;
-    while (index < section.length) {
-      // Find the end of the last complete word within chunkSize
-      let end = index + chunkSize;
-      if (end < section.length) {
-        const nextSpace = section.indexOf(' ', end);
-        end = nextSpace > -1 ? nextSpace : end;
+    console.log('Keywords:', keywords);
+    
+    // Extract relevant snippets from documents with improved scoring
+    const relevantSnippets = [];
+    
+    for (const doc of documents) {
+      const content = doc.pageContent.toLowerCase();
+      let relevance = 0;
+      let bestSnippet = null;
+      
+      // Check for keyword matches with enhanced scoring
+      for (const keyword of keywords) {
+        if (content.includes(keyword)) {
+          // Higher weight for important keywords that might be the focus of the question
+          const keywordImportance = query.toLowerCase().includes(keyword) ? 2 : 1;
+          relevance += keywordImportance;
+          
+          // Try to find a good sentence containing this keyword
+          const sentence = findBestSentence(doc.pageContent, keyword);
+          if (sentence && (!bestSnippet || sentence.length < bestSnippet.length)) {
+            bestSnippet = sentence;
+          }
+        }
       }
       
-      const chunk = section.slice(index, end).trim();
-      if (chunk) {
-        chunks.push(chunk);
+      if (relevance > 0) {
+        // If we have a good sentence, use it, otherwise extract a context window
+        let snippet = '';
+        
+        if (bestSnippet) {
+          snippet = bestSnippet;
+        } else {
+          // Find the section with the highest keyword density
+          let bestPosition = 0;
+          let bestDensity = 0;
+          
+          // Scan through the document to find the best section
+          for (let i = 0; i < content.length; i += 100) {
+            let localDensity = 0;
+            const section = content.substring(i, i + 300);
+            
+            for (const keyword of keywords) {
+              const regex = new RegExp(keyword, 'gi');
+              const matches = section.match(regex);
+              if (matches) {
+                localDensity += matches.length;
+              }
+            }
+            
+            if (localDensity > bestDensity) {
+              bestDensity = localDensity;
+              bestPosition = i;
+            }
+          }
+          
+          // Extract the snippet from the best position
+          const start = Math.max(0, bestPosition);
+          const end = Math.min(doc.pageContent.length, bestPosition + 300);
+          snippet = doc.pageContent.substring(start, end);
+        }
+        
+        // Add to relevant snippets with improved metadata
+        relevantSnippets.push({
+          text: snippet,
+          source: doc.metadata.source || 'Document',
+          relevance: relevance,
+          sentenceBased: !!bestSnippet
+        });
       }
-      index += (chunkSize - overlap);
     }
-  }
-  
-  return chunks;
-}
-
-// Cosine similarity helper function
-function cosineSimilarity(a: number[], b: number[]): number {
-  const dotProduct = a.reduce((sum, val, i) => sum + val * b[i], 0);
-  const normA = Math.sqrt(a.reduce((sum, val) => sum + val * val, 0));
-  const normB = Math.sqrt(b.reduce((sum, val) => sum + val * val, 0));
-  return dotProduct / (normA * normB);
-}
-
-// Find most similar documents
-async function findSimilarDocuments(
-  docs: Document[], 
-  query: string, 
-  embeddingModel: HuggingFaceInferenceEmbeddings, 
-  k: number
-): Promise<Document[]> {
-  try {
-    // Clean the query
-    const cleanedQuery = cleanText(query);
     
-    // Get embeddings for all documents
-    const docEmbeddings = await embeddingModel.embedDocuments(
-      docs.map(doc => doc.pageContent)
-    );
+    // Sort by relevance
+    relevantSnippets.sort((a, b) => b.relevance - a.relevance);
     
-    // Get embedding for query
-    const queryEmbedding = await embeddingModel.embedQuery(cleanedQuery);
-    
-    // Calculate similarities
-    const similarities = docEmbeddings.map(embedding => 
-      cosineSimilarity(queryEmbedding, embedding)
-    );
-    
-    // Get top k documents
-    return similarities
-      .map((score, idx) => ({ score, doc: docs[idx] }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, k)
-      .map(item => item.doc);
+    // Generate a response
+    if (relevantSnippets.length > 0) {
+      // Create a response based on the most relevant snippets
+      const topSnippets = relevantSnippets.slice(0, 3);
+      let responseText = `Based on your documents, here's what I found about "${query}":\n\n`;
+      
+      // Create a more coherent answer based on the snippets
+      if (topSnippets.length === 1) {
+        // If only one relevant snippet, use it directly
+        responseText = `Based on your document "${topSnippets[0].source}", I found this information about your question:\n\n${topSnippets[0].text}\n`;
+      } else {
+        // If multiple snippets, organize them by source
+        const snippetsBySource: Record<string, string[]> = {};
+        
+        topSnippets.forEach(snippet => {
+          if (!snippetsBySource[snippet.source]) {
+            snippetsBySource[snippet.source] = [];
+          }
+          snippetsBySource[snippet.source].push(snippet.text);
+        });
+        
+        // Combine snippets from the same source
+        for (const [source, snippets] of Object.entries(snippetsBySource)) {
+          responseText += `From ${source}:\n${snippets.join('\n\n')}\n\n`;
+        }
+      }
+      
+      // Add citations
+      const citations = topSnippets.map((snippet) => ({
+        text: snippet.text,
+        source: snippet.source
+      }));
+      
+      return {
+        text: responseText,
+        citations
+      };
+    } else {
+      return {
+        text: `I couldn't find specific information about "${query}" in your documents. Could you try rephrasing your question?`,
+        citations: []
+      };
+    }
   } catch (error) {
-    console.error('Error in findSimilarDocuments:', error);
-    throw error;
+    console.error('Error processing query:', error);
+    return {
+      text: 'Sorry, I encountered an error while processing your question.',
+      citations: []
+    };
   }
 }
 
-// Configure route options to increase timeout
-export const runtime = 'edge'; // Enable edge runtime for better performance
-export const maxDuration = 60; // Extend function timeout to 60 seconds (Vercel Edge functions support this)
+// Extract text from document data
+async function extractTextFromDocument(file: FileData): Promise<string> {
+  try {
+    // If text was already extracted client-side, use that
+    if (file.text) {
+      console.log(`Using pre-extracted text for ${file.name}`);
+      return file.text;
+    }
+    
+    // Handle different file types
+    if (file.type === 'application/pdf') {
+      // Use direct extraction for PDFs
+      try {
+        console.log('Using direct PDF extraction');
+        const base64Content = file.data.replace(/^data:application\/pdf;base64,/, '');
+        const extractedText = await extractBasicPdfText(base64Content);
+        return extractedText;
+      } catch (error) {
+        console.error('Error in direct PDF extraction:', error);
+        return `[Error processing PDF: ${file.name}]`;
+      }
+    } else if (file.type.includes('text/')) {
+      // For text files, decode the base64
+      try {
+        const base64Content = file.data.split(',')[1] || file.data;
+        const binaryString = atob(base64Content);
+        return binaryString;
+      } catch (e) {
+        console.error('Error decoding text file:', e);
+        return `[Error decoding ${file.name}]`;
+      }
+    } else if (file.type.includes('application/json')) {
+      try {
+        const base64Content = file.data.split(',')[1] || file.data;
+        const jsonString = atob(base64Content);
+        // Parse and stringify to make it readable
+        const jsonData = JSON.parse(jsonString);
+        return JSON.stringify(jsonData, null, 2);
+      } catch (e) {
+        console.error('Error parsing JSON:', e);
+        return `[Error parsing JSON in ${file.name}]`;
+      }
+    } else {
+      // For other file types, just indicate we received them
+      return `[Content from ${file.name} (${file.type})]`;
+    }
+  } catch (error) {
+    console.error('Error extracting text:', error);
+    return `[Error processing ${file.name}]`;
+  }
+}
 
 export async function POST(req: NextRequest) {
+  console.log('POST request received at /api/chat');
+  
   try {
-    // Check if HuggingFace API key is available
-    if (!HUGGINGFACEHUB_API_KEY || !embeddingModel || !llm) {
-      console.error('HuggingFace API key or models not available');
-      return NextResponse.json(
-        { text: 'The document analysis service is currently unavailable. Please try again later.' },
-        { status: 200 }
-      );
+    // Parse the request body
+    const data = await req.json();
+    const { messages, files } = data;
+    
+    console.log(`Received ${files?.length || 0} files`);
+    
+    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+      return NextResponse.json({ error: 'No messages provided' }, { status: 400 });
     }
-
-    // Create a timeout promise
-    const timeoutPromise = new Promise<never>((_, reject) => 
-      setTimeout(() => reject(new Error('Request timed out')), 55000) // 55 seconds
-    );
-
-    // Create the main request processing promise
-    const processingPromise = (async () => {
-      const formData = await req.formData();
-      const files = formData.getAll('files') as File[];
-      const question = formData.get('question') as string || "What is this document about?";
-
-      if (!files.length) {
-        return NextResponse.json(
-          { text: 'Please upload a document to analyze' },
-          { status: 200 }
-        );
-      }
-
-      console.log('Processing files:', files.map(f => f.name));
-
-      // Load and process documents - use smaller chunk size in production
-      const docs: Document[] = [];
-      for (const file of files) {
+    
+    // Get the last user message
+    const lastMessage = messages[messages.length - 1].content;
+    
+    // Process documents
+    const documents: Document[] = [];
+    
+    if (files && files.length > 0) {
+      // Process files concurrently for better performance
+      const processedFiles = await Promise.all(files.map(async (file: FileData) => {
         try {
-          const arrayBuffer = await file.arrayBuffer();
-          let text = '';
+          // Extract text from the file
+          const text = await extractTextFromDocument(file);
           
-          if (file.name.toLowerCase().endsWith('.pdf')) {
-            try {
-              // For Edge runtime, we'll use a simpler approach for PDF extraction
-              // We need to encode and decode to handle binary data properly
-              const buffer = Buffer.from(arrayBuffer);
-              
-              // Try to extract text with better encoding handling
-              try {
-                const decoder = new TextDecoder('utf-8', { fatal: false });
-                text = decoder.decode(buffer);
-              } catch (decodeError) {
-                console.warn('UTF-8 decoding failed, falling back to binary:', decodeError);
-                text = await new Blob([arrayBuffer]).text();
+          if (text && text.length > 10) {
+            // Create a document with cleaned text
+            return new Document({
+              pageContent: text,
+              metadata: {
+                source: file.name,
+                type: file.type,
+                size: file.size || 0
               }
-              
-              // Check if we got meaningful text content
-              if (!text.trim() || text.length < 100 || /[^\x20-\x7E\n\t]{30,}/.test(text)) {
-                console.warn('PDF extraction yielded invalid content, may be a binary/scanned PDF');
-                return NextResponse.json(
-                  { text: "I couldn't properly extract text from this PDF. It may be a scanned document or contain non-text elements. Please try with a text-based PDF or convert it to a text document first." },
-                  { status: 200 }
-                );
-              }
-              
-              console.log('Successfully extracted text from PDF, length:', text.length);
-            } catch (error) {
-              console.error('Error extracting text from PDF:', error);
-              return NextResponse.json(
-                { text: "I couldn't process the PDF file. Please try uploading a text-based PDF or a plain text document instead." },
-                { status: 200 }
-              );
-            }
-          } else {
-            // For non-PDF files, use direct text extraction
-            text = await new Blob([arrayBuffer]).text();
+            });
           }
-          
-          if (!text.trim()) {
-            console.warn(`No text content extracted from ${file.name}`);
-            return NextResponse.json(
-              { text: "I couldn't extract any text content from the file. It might be a scanned document, an image, or contain only non-textual content." },
-              { status: 200 }
-            );
-          }
-
-          // Clean the text before splitting into chunks
-          text = cleanText(text);
-          console.log('Cleaned text length:', text.length);
-          
-          // Split text into smaller chunks to stay within token limits - use smaller chunks in production
-          const chunks = splitTextIntoChunks(text, 120, 15);
-          console.log('Created chunks:', chunks.length);
-          
-          // Limit the number of chunks to process in production
-          const maxChunks = 50;
-          const limitedChunks = chunks.slice(0, maxChunks);
-          
-          if (chunks.length > maxChunks) {
-            console.log(`Processing only ${maxChunks} of ${chunks.length} chunks to avoid timeout`);
-          }
-          
-          limitedChunks.forEach((chunk, index) => {
-            if (chunk.trim()) {  // Only add non-empty chunks
-              docs.push(new Document({ 
-                pageContent: chunk,
-                metadata: { 
-                  source: file.name, 
-                  page: Math.floor(index / 2) + 1 
-                }
-              }));
-            }
-          });
+          return null;
         } catch (error) {
           console.error(`Error processing file ${file.name}:`, error);
-          return NextResponse.json(
-            { text: `I encountered an error processing the file ${file.name}. Please try again with a smaller or different file.` },
-            { status: 200 }
-          );
+          return null;
         }
+      }));
+
+      // Filter out null results and add to documents
+      for (const doc of processedFiles) {
+        if (doc) documents.push(doc);
       }
-
-      if (!docs.length) {
-        return NextResponse.json(
-          { text: "I couldn't extract useful content from the documents. Please try with different files." },
-          { status: 200 }
-        );
-      }
-
-      console.log('Total documents created:', docs.length);
-      console.log('Finding relevant documents for question:', question);
-
-      // Find relevant documents using similarity search
-      let relevantDocs;
-      try {
-        // Limit to just 2 most relevant docs to speed up processing
-        relevantDocs = await findSimilarDocuments(docs, question, embeddingModel, 2);
-      } catch (error) {
-        console.error('Error finding similar documents:', error);
-        return NextResponse.json(
-          { text: "I encountered an error while analyzing the documents. This might be due to a temporary issue with the analysis service. Please try again later with smaller files." },
-          { status: 200 }
-        );
-      }
-
-      // Format context and question - keeping context more concise
-      const context = relevantDocs.map((doc: Document) => doc.pageContent).join('\n\n');
-      const prompt = `<s>[INST] ${TEMPLATE}\n\nContext: ${context}\n\nQuestion: ${question}\n\nAnswer: [/INST]`;
       
-      console.log('Generating response with context length:', context.length);
-
-      // Generate answer with error handling and timeout
-      let response;
-      try {
-        if (llm) {
-          // Add timeout to LLM prediction
-          response = await Promise.race([
-            llm.predict(prompt),
-            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('LLM timeout')), 25000))
-          ]);
-          console.log('Generated response:', response);
-        } else {
-          throw new Error('LLM not initialized');
-        }
-      } catch (error) {
-        console.error('Error generating response:', error);
-        response = "I apologize, but I encountered an error while processing your question. Please try asking in a different way or with a simpler question.";
-      }
-
-      return NextResponse.json({
-        text: response,
-        citations: relevantDocs.map((doc: Document) => {
-          // Ensure citation text is clean and readable
-          const citationText = cleanText(doc.pageContent);
-          
-          // Extra check to ensure citation doesn't contain binary data
-          const cleanedCitation = citationText
-            .replace(/[^\x20-\x7E\n\t\r .,:;?!()[\]{}'"@#$%&*+-=/\\|<>^_`~]/g, '')
-            .trim();
-          
-          // Only include first 100 chars + ellipsis to avoid large citations
-          const truncatedText = cleanedCitation.length > 100 
-            ? cleanedCitation.substring(0, 100) + "..." 
-            : cleanedCitation;
-          
-          return {
-            text: truncatedText,
-            source: doc.metadata.source || "document",
-            page: doc.metadata.page || 1
-          };
-        })
-      });
-    })();
-
-    // Race the processing against the timeout
-    return await Promise.race([processingPromise, timeoutPromise]);
-    
-  } catch (error) {
-    console.error('Error processing request:', error);
-    if (error instanceof Error && error.message === 'Request timed out') {
-      return NextResponse.json(
-        { text: 'The request took too long to process. Please try with smaller documents or a simpler question.' },
-        { status: 200 }
-      );
+      console.log(`Successfully processed ${documents.length} documents`);
     }
-    return NextResponse.json(
-      { text: 'Something went wrong while processing your request. Please try again later with smaller documents.' },
-      { status: 200 }
-    );
+    
+    if (documents.length === 0) {
+      return NextResponse.json({ 
+        error: 'No documents could be processed successfully' 
+      }, { status: 400 });
+    }
+    
+    // Process the query against the documents
+    const response = await processQuery(lastMessage, documents);
+    
+    // Return the response
+    return NextResponse.json(response);
+  } catch (error: any) {
+    console.error('Error in chat API route:', error);
+    return NextResponse.json({ 
+      error: `Error processing request: ${error.message || 'Unknown error'}` 
+    }, { status: 500 });
   }
 } 
