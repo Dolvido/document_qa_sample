@@ -9,22 +9,37 @@ import { AnimatePresence } from 'framer-motion';
 // Safe storage helper functions
 const safeLocalStorage = {
   getItem: (key: string): string | null => {
+    if (typeof window === 'undefined') return null;
+    
     try {
-      if (typeof window !== 'undefined') {
-        return localStorage.getItem(key);
-      }
+      return window.localStorage.getItem(key);
     } catch (e) {
-      console.warn('Local storage access denied');
+      console.warn('Local storage access denied:', e);
+      return null;
     }
-    return null;
   },
-  setItem: (key: string, value: string): void => {
+  setItem: (key: string, value: string): boolean => {
+    if (typeof window === 'undefined') return false;
+    
     try {
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(key, value);
-      }
+      window.localStorage.setItem(key, value);
+      return true;
     } catch (e) {
-      console.warn('Local storage access denied');
+      console.warn('Local storage access denied:', e);
+      return false;
+    }
+  },
+  isAvailable: (): boolean => {
+    if (typeof window === 'undefined') return false;
+    
+    try {
+      // Test if storage is available
+      const testKey = '__storage_test__';
+      window.localStorage.setItem(testKey, 'test');
+      window.localStorage.removeItem(testKey);
+      return true;
+    } catch (e) {
+      return false;
     }
   }
 };
@@ -34,8 +49,64 @@ export default function ChatInterface() {
   const [files, setFiles] = useState<File[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [storageAvailable, setStorageAvailable] = useState<boolean>(true);
   const inputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // Check if storage is available
+  useEffect(() => {
+    const checkStorage = () => {
+      const available = safeLocalStorage.isAvailable();
+      setStorageAvailable(available);
+      if (!available) {
+        console.warn('Browser storage is not available - some features may be limited');
+      }
+    };
+    
+    // Check once on mount
+    checkStorage();
+  }, []);
+
+  // Load saved messages and files from storage on component mount
+  useEffect(() => {
+    if (!storageAvailable) return;
+    
+    try {
+      // Try to load saved messages
+      const savedMessages = safeLocalStorage.getItem('chat_messages');
+      if (savedMessages) {
+        setMessages(JSON.parse(savedMessages));
+      }
+      
+      // Note: We can't save actual File objects to localStorage
+      // So we're just restoring messages here
+    } catch (e) {
+      console.warn('Failed to load saved chat state:', e);
+      // Clear potentially corrupted state
+      safeLocalStorage.setItem('chat_messages', '');
+    }
+  }, [storageAvailable]);
+
+  // Save messages to storage when they change
+  useEffect(() => {
+    if (!storageAvailable || messages.length === 0) return;
+    
+    try {
+      safeLocalStorage.setItem('chat_messages', JSON.stringify(messages));
+    } catch (e) {
+      console.warn('Failed to save chat state:', e);
+    }
+  }, [messages, storageAvailable]);
+
+  // Clear saved data when clearing chat
+  const clearChat = () => {
+    setMessages([]);
+    setFiles([]);
+    
+    if (storageAvailable) {
+      safeLocalStorage.setItem('chat_messages', '');
+    }
+  };
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const fileList = event.target.files;
@@ -218,6 +289,16 @@ export default function ChatInterface() {
             />
           ) : (
             <>
+              {messages.length > 0 && (
+                <div className="flex justify-end mb-4">
+                  <button 
+                    onClick={clearChat}
+                    className="text-sm text-slate-400 hover:text-white bg-slate-800/50 hover:bg-slate-700/50 px-3 py-1.5 rounded-lg transition-colors"
+                  >
+                    Clear Chat
+                  </button>
+                </div>
+              )}
               {messages.map((message, index) => (
                 <ChatMessage key={index} message={message} />
               ))}
@@ -229,6 +310,12 @@ export default function ChatInterface() {
           <div ref={chatEndRef} />
         </div>
       </div>
+      
+      {!storageAvailable && messages.length > 0 && (
+        <div className="mb-4 p-2 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+          <p className="text-amber-200 text-sm">Browser storage is not available. Your chat won't be saved if you close this page.</p>
+        </div>
+      )}
 
       <form 
         onSubmit={handleSubmit} 
