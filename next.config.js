@@ -4,7 +4,7 @@ const nextConfig = {
   reactStrictMode: true,
   experimental: {
     // This is required for pdf-parse
-    serverComponentsExternalPackages: ['pdf-parse']
+    serverComponentsExternalPackages: ['pdf-parse', 'pdfjs-dist']
   },
   // Enable source maps in production for better error reporting
   productionBrowserSourceMaps: true,
@@ -43,6 +43,11 @@ const nextConfig = {
       fs: false,
       http: false,
       https: false,
+      path: false,
+      zlib: false,
+      stream: false,
+      util: false,
+      crypto: false
     };
     
     return config;

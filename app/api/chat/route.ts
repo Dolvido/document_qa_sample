@@ -54,6 +54,7 @@ try {
 function cleanText(text: string): string {
   return text
     .replace(/[\uFFFD\uFFFE\uFFFF]/g, '') // Remove replacement characters
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '') // Remove control characters
     .replace(/[^\x20-\x7E\n\t]/g, ' ') // Replace non-ASCII chars with space
     .replace(/\s+/g, ' ') // Normalize whitespace
     .trim();
@@ -185,26 +186,32 @@ export async function POST(req: NextRequest) {
           if (file.name.toLowerCase().endsWith('.pdf')) {
             try {
               // For Edge runtime, we'll use a simpler approach for PDF extraction
-              // Note: This is a temporary solution for Edge runtime
-              // In production, consider using a PDF extraction API service instead of pdf-parse
+              // We need to encode and decode to handle binary data properly
+              const buffer = Buffer.from(arrayBuffer);
               
-              // Try direct text extraction first
-              text = await new Blob([arrayBuffer]).text();
+              // Try to extract text with better encoding handling
+              try {
+                const decoder = new TextDecoder('utf-8', { fatal: false });
+                text = decoder.decode(buffer);
+              } catch (decodeError) {
+                console.warn('UTF-8 decoding failed, falling back to binary:', decodeError);
+                text = await new Blob([arrayBuffer]).text();
+              }
               
-              // If we didn't get much text, inform the user about the limitations
-              if (!text.trim() || text.length < 100) {
-                console.warn('Direct text extraction from PDF yielded little content');
+              // Check if we got meaningful text content
+              if (!text.trim() || text.length < 100 || /[^\x20-\x7E\n\t]{30,}/.test(text)) {
+                console.warn('PDF extraction yielded invalid content, may be a binary/scanned PDF');
                 return NextResponse.json(
-                  { text: "The Edge runtime has limited PDF processing capabilities. For better results, please convert your PDF to a text file, or use a plain text document." },
+                  { text: "I couldn't properly extract text from this PDF. It may be a scanned document or contain non-text elements. Please try with a text-based PDF or convert it to a text document first." },
                   { status: 200 }
                 );
               }
               
-              console.log('Successfully extracted text from PDF using direct method, length:', text.length);
+              console.log('Successfully extracted text from PDF, length:', text.length);
             } catch (error) {
               console.error('Error extracting text from PDF:', error);
               return NextResponse.json(
-                { text: "I couldn't process the PDF file in the Edge runtime. Please try uploading a text document instead, or use the non-Edge version of this application." },
+                { text: "I couldn't process the PDF file. Please try uploading a text-based PDF or a plain text document instead." },
                 { status: 200 }
               );
             }
@@ -306,11 +313,26 @@ export async function POST(req: NextRequest) {
 
       return NextResponse.json({
         text: response,
-        citations: relevantDocs.map((doc: Document) => ({
-          text: cleanText(doc.pageContent).substring(0, 150) + "...",
-          source: doc.metadata.source || "document",
-          page: doc.metadata.page || 1
-        }))
+        citations: relevantDocs.map((doc: Document) => {
+          // Ensure citation text is clean and readable
+          const citationText = cleanText(doc.pageContent);
+          
+          // Extra check to ensure citation doesn't contain binary data
+          const cleanedCitation = citationText
+            .replace(/[^\x20-\x7E\n\t\r .,:;?!()[\]{}'"@#$%&*+-=/\\|<>^_`~]/g, '')
+            .trim();
+          
+          // Only include first 100 chars + ellipsis to avoid large citations
+          const truncatedText = cleanedCitation.length > 100 
+            ? cleanedCitation.substring(0, 100) + "..." 
+            : cleanedCitation;
+          
+          return {
+            text: truncatedText,
+            source: doc.metadata.source || "document",
+            page: doc.metadata.page || 1
+          };
+        })
       });
     })();
 
